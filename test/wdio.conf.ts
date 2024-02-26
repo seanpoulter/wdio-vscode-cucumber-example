@@ -1,3 +1,4 @@
+import * as path from 'node:path'
 import * as url from 'node:url'
 import type { Options } from '@wdio/types'
 
@@ -67,7 +68,7 @@ export const config: Options.Testrunner = {
         browserVersion: 'stable', // also possible: "insiders" or a specific version e.g. "1.80.0"
         'wdio:vscodeOptions': {
             // points to directory where extension package.json is located
-            extensionPath: __dirname,
+            extensionPath: path.join(__dirname, 'extension'),
             // optional VS Code settings
             userSettings: {
                 "editor.fontSize": 14
