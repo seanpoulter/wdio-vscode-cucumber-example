@@ -1,4 +1,8 @@
+import * as url from 'node:url'
 import type { Options } from '@wdio/types'
+
+const __dirname = url.fileURLToPath(new URL('.', import.meta.url))
+
 export const config: Options.Testrunner = {
     //
     // ====================

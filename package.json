@@ -11,6 +11,6 @@
     "wdio-vscode-service": "^6.0.2"
   },
   "scripts": {
-    "wdio": "wdio run ./wdio.conf.ts"
+    "test": "wdio run ./wdio.conf.ts"
   }
 }
