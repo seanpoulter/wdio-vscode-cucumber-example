@@ -1,4 +1,8 @@
+import * as child_process from 'node:child_process'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import * as url from 'node:url'
 import type { Options } from '@wdio/types'
 
@@ -35,7 +39,7 @@ export const config: Options.Testrunner = {
     // of the config file unless it's absolute.
     //
     specs: [
-        // ToDo: define location for spec files here
+        './features/**/*.feature',
     ],
     // Patterns to exclude.
     exclude: [
@@ -187,11 +191,113 @@ export const config: Options.Testrunner = {
     // resolved to continue.
     /**
      * Gets executed once before all workers get launched.
-     * @param {object} config wdio configuration object
+     * @param {object} _config wdio configuration object
      * @param {Array.<Object>} capabilities list of capabilities details
      */
-    // onPrepare: function (config, capabilities) {
-    // },
+    onPrepare: async function (_config, capabilities) {
+        if (!(os.platform() === 'linux' && process.arch === 'arm64')) {
+            return
+        }
+
+        // Read the cachePath
+        type Service = { cachePath?: string } | undefined
+        const service = config.services?.find(service =>
+            Array.isArray(service)
+            && service[0] === 'vscode'
+            && typeof service[1] === 'object'
+        ) as Service
+        const cachePath = service?.cachePath || '.wdio-vscode-service'
+
+        // Modify each VS Code capability
+        const caps = Array.isArray(capabilities) ? capabilities : [capabilities]
+        for (const cap of caps) {
+            if (cap.browserName === 'vscode' && cap['wdio:chromedriverOptions']?.binary === undefined) {
+                const vscodeVersion = cap.browserVersion || 'stable'
+                let vscodeBranch = vscodeVersion
+
+                // Prefer to use the cached versions
+                let electronVersion: string | undefined = undefined
+                let cache
+                try {
+                    const buf = fs.readFileSync(path.join(cachePath, 'versions.txt'))
+                    cache = JSON.parse(buf.toString())
+
+                    // Refresh "stable" and "insiders" every releases each day
+                    if (vscodeVersion === "stable" || vscodeVersion === "insiders") {
+                        const timeout = 24 * 60 * 60 * 1_000
+                        const expired = !cache[vscodeVersion].timestamp || Date.now() >= (cache[vscodeVersion].timestamp + timeout)
+                        if (!expired) {
+                            electronVersion = cache[vscodeVersion].electron
+                        }
+                    }
+                    else {
+                        electronVersion = cache[vscodeVersion].electron
+                    }
+                }
+                catch (err) {
+                    if (err.code !== 'ENOENT') {
+                        throw err
+                    }
+                }
+
+                // Cache miss
+                if (!electronVersion) {
+                    // Find the latest release version
+                    if (vscodeVersion === 'stable') {
+                        const response = await fetch(`https://update.code.visualstudio.com/api/releases/stable`)
+                        const body = await response.json()
+                        vscodeBranch = body[0]
+                    }
+
+                    // Find the version of Electron to download
+                    if (vscodeVersion === 'insiders') {
+                        vscodeBranch = 'main'
+                    }
+                    const vscodeManifestResponse = await fetch(`https://raw.githubusercontent.com/microsoft/vscode/${vscodeBranch}/cgmanifest.json`)
+                    const vscodeManifestBody = await vscodeManifestResponse.json()
+                    electronVersion = vscodeManifestBody.registrations.find(({ component }) => component?.git?.name === 'electron')?.version
+
+                    // Update the cache
+                    cache ||= {}
+                    cache[vscodeVersion] ||= {}
+                    cache[vscodeVersion].electron = electronVersion
+                    cache[vscodeVersion].timestamp = Date.now()
+                    fs.writeFileSync(path.join(cachePath, 'versions.txt'), JSON.stringify(cache, null, 4))
+                }
+
+                // Configure the output paths
+                const zipPath = path.join(cachePath, `chromedriver-v${electronVersion}-linux-arm64.zip`)
+                const binary = path.join(cachePath, `chromedriver-v${electronVersion}-linux-arm64`, 'chromedriver')
+
+                // Only download when necessary
+                if (fs.existsSync(binary)) {
+                    console.log(`Skipping download, bundle for ChromeDriver v${electronVersion} already exists`)
+                }
+                else {
+                    // Download the .zip file
+                    if (fs.existsSync(zipPath)) {
+                        console.log(`Skipping download, chromedriver-v${electronVersion}-linux-arm64.zip already exists`)
+                    }
+                    else {
+                        process.stdout.write(`Downloading chromedriver-v${electronVersion}-linux-arm64.zip...`)
+                        const zipResponse = await fetch(`https://github.com/electron/electron/releases/download/v${electronVersion}/chromedriver-v${electronVersion}-linux-arm64.zip`)
+                        const writeStream = fs.createWriteStream(zipPath)
+                        await pipeline(zipResponse.body, writeStream)
+                        console.log('done.')
+                    }
+
+                    // Extract the .zip file without an npm package. Assumes it is run from the root directory of the project.
+                    await child_process.execSync(`unzip "${path.basename(zipPath)}" -d "${path.basename(zipPath, '.zip')}"`, { cwd: cachePath })
+                    fs.rmSync(zipPath)
+                }
+
+                // Use the binary for arm64
+                cap['wdio:chromedriverOptions'] ||= {}
+                cap['wdio:chromedriverOptions'].binary = binary
+            }
+        }
+    },
+
     /**
      * Gets executed before a worker process is spawned and can be used to initialize specific service
      * for that worker as well as modify runtime environments in an async fashion.
